@@ -16,9 +16,6 @@
 package com.terracottatech.frs.compaction;
 
 import com.terracottatech.frs.Constants;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.terracottatech.frs.RestartStoreException;
 import com.terracottatech.frs.action.ActionManager;
 import com.terracottatech.frs.action.NullAction;
@@ -34,6 +31,9 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static com.terracottatech.frs.config.FrsProperty.COMPACTOR_POLICY;
 import static com.terracottatech.frs.config.FrsProperty.COMPACTOR_RETRY_INTERVAL;
@@ -66,11 +66,12 @@ public class CompactorImpl implements Compactor {
   private volatile boolean signalPause;
   private boolean paused;
 
+  private final CompactionActionFactory actionFactory;
 
   CompactorImpl(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
-                TransactionManager transactionManager, ActionManager actionManager, final LogManager logManager,
-                CompactionPolicy policy, long runIntervalSeconds, long retryIntervalSeconds,
-                long compactActionThrottle, int startThreshold) {
+      TransactionManager transactionManager, ActionManager actionManager, final LogManager logManager,
+      CompactionPolicy policy, long runIntervalSeconds, long retryIntervalSeconds,
+      long compactActionThrottle, int startThreshold, CompactionActionFactory actionFactory) {
     this.objectManager = objectManager;
     this.transactionManager = transactionManager;
     this.actionManager = actionManager;
@@ -80,22 +81,25 @@ public class CompactorImpl implements Compactor {
     this.retryIntervalSeconds = retryIntervalSeconds;
     this.compactActionThrottle = compactActionThrottle;
     this.startThreshold = startThreshold;
+    this.actionFactory = actionFactory;
   }
 
   public CompactorImpl(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
-                       TransactionManager transactionManager, LogManager logManager,
-                       IOManager ioManager, Configuration configuration, ActionManager actionManager) throws RestartStoreException {
+      TransactionManager transactionManager, LogManager logManager,
+      IOManager ioManager, Configuration configuration, ActionManager actionManager,
+      CompactionActionFactory actionFactory) throws RestartStoreException {
     this(objectManager, transactionManager, actionManager, logManager,
-         getPolicy(configuration, objectManager, logManager, ioManager),
-         configuration.getLong(COMPACTOR_RUN_INTERVAL),
-         configuration.getLong(COMPACTOR_RETRY_INTERVAL),
-         configuration.getLong(COMPACTOR_THROTTLE_AMOUNT),
-         configuration.getInt(COMPACTOR_START_THRESHOLD));
+        getPolicy(configuration, objectManager, logManager, ioManager),
+        configuration.getLong(COMPACTOR_RUN_INTERVAL),
+        configuration.getLong(COMPACTOR_RETRY_INTERVAL),
+        configuration.getLong(COMPACTOR_THROTTLE_AMOUNT),
+        configuration.getInt(COMPACTOR_START_THRESHOLD),
+        actionFactory);
   }
 
   private static CompactionPolicy getPolicy(Configuration configuration,
-                                            ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
-                                            LogManager logManager, IOManager ioManager) throws RestartStoreException{
+      ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+      LogManager logManager, IOManager ioManager) throws RestartStoreException {
     String policy = configuration.getString(COMPACTOR_POLICY);
     if ("LSNGapCompactionPolicy".equals(policy)) {
       return new LSNGapCompactionPolicy(objectManager, logManager, configuration);
@@ -148,14 +152,14 @@ public class CompactorImpl implements Compactor {
           // Flush in a dummy record to make sure everything for the updated lowest lsn
           // is on disk prior to cleaning up to the new lowest lsn.
           // If ObjectManager is empty, use the barrier lsn to invalidate the log
-          
+
           NullAction barrier = new NullAction();
           actionManager.happened(barrier).get();
-          
+
           long lowLsn = objectManager.getLowestLsn();
-          
-          if ( lowLsn == Constants.ISEMPTY_LSN ) {
-              lowLsn = barrier.getLsn();
+
+          if (lowLsn == Constants.ISEMPTY_LSN) {
+            lowLsn = barrier.getLsn();
           }
 
           if (policy.startCompacting() && alive) {
@@ -174,40 +178,43 @@ public class CompactorImpl implements Compactor {
           LOGGER.info("Compactor is interrupted. Shutting down.");
           return;
         } catch (Throwable t) {
-          LOGGER.error("Error performing compaction. Temporarily disabling compaction for " + retryIntervalSeconds + " seconds.", t);
+          LOGGER.error(
+              "Error performing compaction. Temporarily disabling compaction for " + retryIntervalSeconds + " seconds.",
+              t);
           try {
             Thread.sleep(TimeUnit.SECONDS.toMillis(retryIntervalSeconds));
           } catch (InterruptedException e) {
             LOGGER.info("Compactor is interrupted. Shutting down.");
             return;
           }
-       }
+        }
+      }
     }
-  }
 
-  private void compact() throws ExecutionException, InterruptedException {
-    compactionCondition.drainPermits();
-    long ceilingLsn = transactionManager.getLowestOpenTransactionLsn();
-    long liveSize = objectManager.size();
-    long compactedCount = 0;
-    long baseLsn = logManager.lowestLsn();
-    long startTime = System.currentTimeMillis();
+    private void compact() throws ExecutionException, InterruptedException {
+      compactionCondition.drainPermits();
+      long ceilingLsn = transactionManager.getLowestOpenTransactionLsn();
+      long liveSize = objectManager.size();
+      long compactedCount = 0;
+      long baseLsn = logManager.lowestLsn();
+      long startTime = System.currentTimeMillis();
 
-     long rangeLsn = (logManager.currentLsn() - baseLsn - liveSize)/1000L;
-     if ( rangeLsn == 0 ) {
-       rangeLsn = 1;
-     }
-     if ( rangeLsn < 0 ) {
-       throw new AssertionError("not all LSNs accounted for");
-     }
-     long startLsn = 0;
-     long lastLsn = 0;
- 
+      long rangeLsn = (logManager.currentLsn() - baseLsn - liveSize) / 1000L;
+      if (rangeLsn == 0) {
+        rangeLsn = 1;
+      }
+      if (rangeLsn < 0) {
+        throw new AssertionError("not all LSNs accounted for");
+      }
+      long startLsn = 0;
+      long lastLsn = 0;
+
       LOGGER.debug("range is " + rangeLsn + " ceiling:" + ceilingLsn + " base:" + baseLsn + " live:" + liveSize);
       while (compactedCount < liveSize && !signalPause) {
-        ObjectManagerEntry<ByteBuffer, ByteBuffer, ByteBuffer> compactionEntry = objectManager.acquireCompactionEntry((useLimiting)?baseLsn + rangeLsn:ceilingLsn);
+        ObjectManagerEntry<ByteBuffer, ByteBuffer, ByteBuffer> compactionEntry = objectManager
+            .acquireCompactionEntry((useLimiting) ? baseLsn + rangeLsn : ceilingLsn);
         if (compactionEntry == null) {
-          if (useLimiting && baseLsn + rangeLsn <= Math.min(logManager.currentLsn(), ceilingLsn) ) {
+          if (useLimiting && baseLsn + rangeLsn <= Math.min(logManager.currentLsn(), ceilingLsn)) {
             rangeLsn <<= 1;
             LOGGER.debug("bumping range to " + rangeLsn);
             continue;
@@ -216,18 +223,18 @@ public class CompactorImpl implements Compactor {
           }
         }
         lastLsn = compactionEntry.getLsn();
-        if ( startLsn == 0 ) {
+        if (startLsn == 0) {
           startLsn = lastLsn;
         }
         compactedCount++;
         Future<Void> written;
         try {
-          CompactionAction compactionAction =
-                  new CompactionAction(objectManager, compactionEntry);
+          CompactionAction compactionAction = actionFactory.create(objectManager, compactionEntry);
           written = actionManager.happened(compactionAction);
           // We can't update the object manager on Action.record() because the compactor
           // is holding onto the segment lock. Since we want to wait for the action to be
-          // sequenced anyways so we don't keep getting the same compaction keys, we may as
+          // sequenced anyways so we don't keep getting the same compaction keys, we may
+          // as
           // well just do the object manager update here.
           compactionAction.updateObjectManager();
         } finally {
@@ -241,16 +248,20 @@ public class CompactorImpl implements Compactor {
 
         // To prevent filling up the write queue with compaction junk, risking crowding
         // out actual actions, we throttle a bit after some set number of compaction
-        // actions by just waiting until the latest compaction action is written to disk.
+        // actions by just waiting until the latest compaction action is written to
+        // disk.
         if (compactedCount % compactActionThrottle == 0) {
-          // While we're waiting, might as well update the lowest lsn so compaction provides continuous benefit.
+          // While we're waiting, might as well update the lowest lsn so compaction
+          // provides continuous benefit.
           written.get();
           written = null;
           logManager.updateLowestLsn(objectManager.getLowestLsn());
         }
       }
-      LOGGER.debug("compaction base lsn:" + baseLsn + " start lsn:" + baseLsn + " end lsn:" + lastLsn + " live size:" + liveSize);
-      LOGGER.debug("compacted " + compactedCount + " entries in " + TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()-startTime) + " secs.");
+      LOGGER.debug("compaction base lsn:" + baseLsn + " start lsn:" + baseLsn + " end lsn:" + lastLsn + " live size:"
+          + liveSize);
+      LOGGER.debug("compacted " + compactedCount + " entries in "
+          + TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis() - startTime) + " secs.");
     }
   }
 
@@ -258,10 +269,11 @@ public class CompactorImpl implements Compactor {
   public void generatedGarbage(long lsn) {
     try {
       compactionCondition.release();
-    } catch ( Error e ) {
-  //  in rare instances, the maximum number of permits can be exceeded.  This should not cause a crash
+    } catch (Error e) {
+      // in rare instances, the maximum number of permits can be exceeded. This should
+      // not cause a crash
       LOGGER.warn("error generating garbage", e);
-    } 
+    }
   }
 
   @Override
@@ -269,10 +281,11 @@ public class CompactorImpl implements Compactor {
     try {
       compactionCondition.drainPermits();
       compactionCondition.release(startThreshold);
-    } catch ( Error e ) {
-  //  in rare instances, the maximum number of permits can be exceeded.  This should not cause a crash
+    } catch (Error e) {
+      // in rare instances, the maximum number of permits can be exceeded. This should
+      // not cause a crash
       LOGGER.warn("error generating garbage", e);
-    } 
+    }
   }
 
   private synchronized boolean checkForPause() throws InterruptedException {

@@ -13,21 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.terracottatech.frs.compaction;
+package com.terracottatech.frs.cipher;
 
-import com.terracottatech.frs.PutAction;
-import com.terracottatech.frs.action.ActionCodec;
+import com.terracottatech.frs.GettableAction;
+import com.terracottatech.frs.compaction.CompactionAction;
+import com.terracottatech.frs.object.ObjectManager;
+import com.terracottatech.frs.object.ObjectManagerEntry;
 
 import java.nio.ByteBuffer;
 
-/**
- * @author tim
- */
-public abstract class CompactionActions {
-  private CompactionActions() {
-  }
+public class CipherCompactionAction extends CompactionAction {
 
-  public static void registerActions(int id, ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec) {
-    codec.registerAction(id, 0, StandardCompactionAction.class, PutAction.FACTORY);
+  public CipherCompactionAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+      ObjectManagerEntry<ByteBuffer, ByteBuffer, ByteBuffer> entry, GettableAction action) {
+    super(objectManager, entry, action);
   }
 }

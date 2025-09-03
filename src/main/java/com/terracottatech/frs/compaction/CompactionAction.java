@@ -15,25 +15,83 @@
  */
 package com.terracottatech.frs.compaction;
 
-import com.terracottatech.frs.PutAction;
+import com.terracottatech.frs.GettableAction;
+import com.terracottatech.frs.action.Action;
+import com.terracottatech.frs.action.ActionCodec;
 import com.terracottatech.frs.object.ObjectManager;
 import com.terracottatech.frs.object.ObjectManagerEntry;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Set;
 
 /**
- * @author tim
+ * @author prasa
  */
-class CompactionAction extends PutAction {
+public abstract class CompactionAction implements GettableAction {
+
   private final ObjectManagerEntry<ByteBuffer, ByteBuffer, ByteBuffer> entry;
   private final ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager;
 
+  private final GettableAction delegate;
   private volatile Long lsn;
 
-  CompactionAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, ObjectManagerEntry<ByteBuffer, ByteBuffer, ByteBuffer> entry) {
-    super(objectManager, null, entry.getId(), entry.getKey(), entry.getValue(), entry.getLsn());
+  protected CompactionAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+      ObjectManagerEntry<ByteBuffer, ByteBuffer, ByteBuffer> entry, GettableAction action) {
     this.objectManager = objectManager;
     this.entry = entry;
+    this.delegate = action;
+  }
+
+  @Override
+  public ByteBuffer getIdentifier() {
+    return delegate.getIdentifier();
+  }
+
+  @Override
+  public ByteBuffer getKey() {
+    return delegate.getKey();
+  }
+
+  @Override
+  public ByteBuffer getValue() {
+    return delegate.getValue();
+  }
+
+  @Override
+  public long getLsn() {
+    return delegate.getLsn();
+  }
+
+  @Override
+  public Set<Long> getInvalidatedLsns() {
+    return delegate.getInvalidatedLsns();
+  }
+
+  @Override
+  public void setDisposable(Closeable c) {
+    delegate.setDisposable(c);
+  }
+
+  @Override
+  public void dispose() {
+    delegate.dispose();
+  }
+
+  @Override
+  public void close() throws IOException {
+    delegate.close();
+  }
+
+  @Override
+  public int replayConcurrency() {
+    return delegate.replayConcurrency();
+  }
+
+  @Override
+  public ByteBuffer[] getPayload(ActionCodec codec) {
+    return delegate.getPayload(codec);
   }
 
   @Override
@@ -41,7 +99,20 @@ class CompactionAction extends PutAction {
     this.lsn = lsn;
   }
 
-  void updateObjectManager() {
+  /**
+   * Updates the ObjectManager with the new LSN after this compaction action
+   * has been recorded.
+   * <p>
+   * This method is called after the action has been sequenced (via
+   * {@link Action#record(long)}) but typically before the compaction entry is
+   * released. It ensures that the ObjectManager's state is updated to reflect
+   * the compaction operation.
+   * <p>
+   * This method cannot be called during {@link Action#record(long)} because
+   * the compactor typically holds the segment lock at that time. Instead,
+   * it's called separately after the action has been sequenced.
+   */
+  public void updateObjectManager() {
     while (lsn == null) {
       // Just spin, this shouldn't take long.
     }
