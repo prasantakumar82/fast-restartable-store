@@ -16,7 +16,6 @@
 package com.terracottatech.frs.cipher;
 
 import com.terracottatech.frs.action.ActionCodec;
-import com.terracottatech.frs.action.ActionFactory;
 
 import java.nio.ByteBuffer;
 
@@ -24,9 +23,7 @@ import java.nio.ByteBuffer;
  * @author prasanta
  */
 public abstract class EncryptionActions {
-  public static void registerActions(int id, ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec,
-      ActionFactory<ByteBuffer, ByteBuffer, ByteBuffer> actionFactory) {
-    codec.registerAction(id, 0, CipherPutAction.class, actionFactory);
-    codec.registerAction(id, 1, CipherCompactionAction.class, actionFactory);
+  public static void registerActions(int id, ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec, CipherManager cipherManager) {
+    codec.registerAction(id, 0, EncryptedAction.class, new EncryptedAction.EncryptedActionFactory(cipherManager));
   }
 }

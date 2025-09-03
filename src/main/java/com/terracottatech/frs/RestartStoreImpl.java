@@ -15,12 +15,17 @@
  */
 package com.terracottatech.frs;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.terracottatech.frs.action.Action;
 import com.terracottatech.frs.action.ActionManager;
 import com.terracottatech.frs.compaction.Compactor;
+import com.terracottatech.frs.compaction.CompactorImpl;
 import com.terracottatech.frs.config.Configuration;
 import com.terracottatech.frs.config.FrsProperty;
 import com.terracottatech.frs.flash.ReadManager;
+import com.terracottatech.frs.io.IOManager;
 import com.terracottatech.frs.io.IOStatistics;
 import com.terracottatech.frs.log.LogManager;
 import com.terracottatech.frs.log.LogRecord;
@@ -36,6 +41,7 @@ import com.terracottatech.frs.util.NullFuture;
 import java.io.File;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.concurrent.Callable;
@@ -47,14 +53,11 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /**
  * @author twu
  */
 public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, ByteBuffer>,
-    RecoveryListener {
+        RecoveryListener {
   private static final Logger LOGGER = LoggerFactory.getLogger(RestartStoreImpl.class);
 
   private enum State {
@@ -62,7 +65,7 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
   }
 
   private final ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager;
-  private final TransactionManager transactionManager;
+  private final TransactionManager                                transactionManager;
   private final Compactor compactor;
   private final LogManager logManager;
   private final ActionManager actionManager;
@@ -78,12 +81,10 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
   private volatile State state = State.INIT;
   private volatile State prevState = state;
 
-  private final GettableActionFactory actionFactory;
-
   RestartStoreImpl(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
-      TransactionManager transactionManager, LogManager logManager,
-      ActionManager actionManager, ReadManager read, Compactor compactor,
-      Configuration configuration, GettableActionFactory actionFactory) {
+                   TransactionManager transactionManager, LogManager logManager,
+                   ActionManager actionManager, ReadManager read, Compactor compactor,
+                   Configuration configuration) {
     this.transactionManager = transactionManager;
     this.objectManager = objectManager;
     this.logManager = logManager;
@@ -93,20 +94,21 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     this.configuration = configuration;
     this.pauseExecutionService = Executors.newScheduledThreadPool(0);
     this.maxPauseTime = configuration.getInt(FrsProperty.STORE_MAX_PAUSE_TIME_IN_MILLIS);
-    this.actionFactory = actionFactory;
   }
 
-  protected ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> getObjectManager() {
-    return objectManager;
-  }
-
-  protected Compactor getCompactor() {
-    return compactor;
+  public RestartStoreImpl(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+                          TransactionManager transactionManager, LogManager logManager,
+                          ActionManager actionManager, ReadManager read, IOManager ioManager,
+                          Configuration configuration) throws RestartStoreException {
+    this(objectManager, transactionManager, logManager, actionManager, read, 
+         new CompactorImpl(objectManager, transactionManager, logManager, ioManager, configuration,
+                           actionManager),
+         configuration);
   }
 
   @Override
   public synchronized Future<Void> startup() throws InterruptedException,
-      RecoveryException {
+          RecoveryException {
     while (state != State.INIT) {
       if (state == State.FROZEN) {
         // wait indefinitely as we cannot unfreeze from a frozen state
@@ -119,7 +121,7 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     }
     state = State.RECOVERING;
     RecoveryManager recoveryManager = new RecoveryManagerImpl(logManager, actionManager,
-        configuration);
+                                                              configuration);
     return recoveryManager.recover(this);
   }
 
@@ -160,21 +162,21 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
   @Override
   public Tuple<ByteBuffer, ByteBuffer, ByteBuffer> get(long marker) {
     try {
-      LogRecord c = readManager.get(marker);
-      if (c == null) {
+        LogRecord c = readManager.get(marker);
+        if ( c == null ) {
+            return null;
+        }
+        Action a = actionManager.extract(c);
+        if ( a instanceof GettableAction ) {
+          return (GettableAction)a;
+        } else {
+          throw new IllegalArgumentException("action is not a gettable event");
+        }
+    } catch ( InterruptedIOException ioe ) {
+        Thread.currentThread().interrupt();
         return null;
-      }
-      Action a = actionManager.extract(c);
-      if (a instanceof GettableAction) {
-        return (GettableAction) a;
-      } else {
-        throw new IllegalArgumentException("action is not a gettable event");
-      }
-    } catch (InterruptedIOException ioe) {
-      Thread.currentThread().interrupt();
-      return null;
-    } catch (IOException ioe) {
-      throw new RuntimeException("unrecoverable", ioe);
+    } catch ( IOException ioe ) {
+        throw new RuntimeException("unrecoverable", ioe);
     }
   }
 
@@ -193,39 +195,38 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
 
   @Override
   public Statistics getStatistics() {
-    return new Statistics() {
-      private final IOStatistics delegate = logManager.getIOStatistics();
+      return new Statistics() {
+        private final IOStatistics delegate = logManager.getIOStatistics();
+        @Override
+        public long getTotalAvailable() {
+          return delegate.getTotalAvailable();
+        }
 
-      @Override
-      public long getTotalAvailable() {
-        return delegate.getTotalAvailable();
-      }
+        @Override
+        public long getTotalUsed() {
+          return delegate.getTotalUsed();
+        }
 
-      @Override
-      public long getTotalUsed() {
-        return delegate.getTotalUsed();
-      }
+        @Override
+        public long getTotalWritten() {
+          return delegate.getTotalWritten();
+        }
 
-      @Override
-      public long getTotalWritten() {
-        return delegate.getTotalWritten();
-      }
+        @Override
+        public long getTotalRead() {
+          return delegate.getTotalRead();
+        }
 
-      @Override
-      public long getTotalRead() {
-        return delegate.getTotalRead();
-      }
+        @Override
+        public long getLiveSize() {
+          return delegate.getLiveSize();
+        }
 
-      @Override
-      public long getLiveSize() {
-        return delegate.getLiveSize();
-      }
-
-      @Override
-      public long getExpiredSize() {
-        return delegate.getExpiredSize();
-      }
-    };
+        @Override
+        public long getExpiredSize() {
+          return delegate.getExpiredSize();
+        }
+      };
   }
 
   @Override
@@ -311,8 +312,8 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
   }
 
   /**
-   * Force a resume as we have been in paused state for far too long and no one
-   * has externally called a resume.
+   * Force a resume as we have been in paused state for far too long and no one has
+   * externally called a resume.
    */
   private synchronized void forceResume() {
     if (state != State.PAUSED) {
@@ -330,7 +331,7 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     if (isNotInReadyState(state)) {
       if (state != State.FROZEN || isNotInReadyState(prevState)) {
         throw new IllegalStateException("RestartStore is not ready for mutations. Current state " +
-            (state == State.FROZEN ? prevState : state));
+                                        (state == State.FROZEN ? prevState : state));
       }
     }
   }
@@ -365,14 +366,13 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     }
 
     @Override
-    public Future<Void> get(long timeout, TimeUnit unit)
-        throws InterruptedException, ExecutionException, TimeoutException {
+    public Future<Void> get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
       return new NullFuture();
     }
   }
 
   private class AutoCommitTransaction implements
-      Transaction<ByteBuffer, ByteBuffer, ByteBuffer> {
+          Transaction<ByteBuffer, ByteBuffer, ByteBuffer> {
     private final boolean synchronous;
 
     private AutoCommitTransaction(boolean synchronous) {
@@ -402,24 +402,24 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     }
 
     @Override
-    public Transaction<ByteBuffer, ByteBuffer, ByteBuffer> put(ByteBuffer id, ByteBuffer key, ByteBuffer value)
-        throws TransactionException {
+    public Transaction<ByteBuffer, ByteBuffer, ByteBuffer> put(ByteBuffer id, ByteBuffer key, ByteBuffer value) throws
+            TransactionException {
       checkReadyState();
-      happened(actionFactory.create(objectManager, compactor, id, key, value, isRecovering()));
+      happened(new PutAction(objectManager, compactor, id, key, value, isRecovering()));
       return this;
-    }
+  }
 
     @Override
-    public Transaction<ByteBuffer, ByteBuffer, ByteBuffer> delete(ByteBuffer id)
-        throws TransactionException {
+    public Transaction<ByteBuffer, ByteBuffer, ByteBuffer> delete(ByteBuffer id) throws
+            TransactionException {
       checkReadyState();
       happened(new DeleteAction(objectManager, compactor, id, isRecovering()));
       return this;
     }
 
     @Override
-    public Transaction<ByteBuffer, ByteBuffer, ByteBuffer> remove(ByteBuffer id, ByteBuffer key)
-        throws TransactionException {
+    public Transaction<ByteBuffer, ByteBuffer, ByteBuffer> remove(ByteBuffer id, ByteBuffer key) throws
+            TransactionException {
       checkReadyState();
       happened(new RemoveAction(objectManager, compactor, id, key, isRecovering()));
       return this;
@@ -431,7 +431,7 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
   }
 
   private class TransactionImpl implements
-      Transaction<ByteBuffer, ByteBuffer, ByteBuffer> {
+          Transaction<ByteBuffer, ByteBuffer, ByteBuffer> {
     private final boolean synchronous;
     private final TransactionHandle handle;
     private boolean committed = false;
@@ -442,12 +442,10 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     }
 
     @Override
-    public synchronized Transaction<ByteBuffer, ByteBuffer, ByteBuffer> put(ByteBuffer id, ByteBuffer key,
-        ByteBuffer value) {
+    public synchronized Transaction<ByteBuffer, ByteBuffer, ByteBuffer> put(ByteBuffer id, ByteBuffer key, ByteBuffer value) {
       checkReadyState();
       checkCommitted();
-      transactionManager.happened(handle,
-          actionFactory.create(objectManager, compactor, id, key, value, isRecovering()));
+      transactionManager.happened(handle, new PutAction(objectManager, compactor, id, key, value, isRecovering()));
       return this;
     }
 
@@ -476,14 +474,12 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
     }
 
     private void checkCommitted() {
-      if (committed)
-        throw new IllegalStateException("Transaction is already committed.");
+      if (committed) throw new IllegalStateException("Transaction is already committed.");
     }
   }
 
   /**
-   * Outer Freeze future that can be used to wait for a barrier action to reach
-   * durable storage.
+   * Outer Freeze future that can be used to wait for a barrier action to reach durable storage.
    */
   private class OuterFreezeFuture implements Future<Void> {
     private final Future<Void> innerFreezeMarker;
@@ -519,8 +515,8 @@ public class RestartStoreImpl implements RestartStore<ByteBuffer, ByteBuffer, By
   }
 
   /**
-   * {@link Future} to wait for a snapshot to complete. The {@link OuterSnapshot}
-   * ensures that the compactor is unpaused, once the inner snapshot is complete.
+   * {@link Future} to wait for a snapshot to complete. The {@link OuterSnapshot} ensures that the
+   * compactor is unpaused, once the inner snapshot is complete.
    */
   private class OuterSnapshotFuture implements Future<Snapshot> {
     private final Future<Snapshot> innerSnapshot;

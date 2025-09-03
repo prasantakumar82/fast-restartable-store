@@ -22,6 +22,7 @@ import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidParameterSpecException;
+import java.util.ArrayList;
 import java.util.List;
 
 import javax.crypto.BadPaddingException;
@@ -32,6 +33,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.ShortBufferException;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+
 import com.terracottatech.frs.config.Configuration;
 import com.terracottatech.frs.config.FrsProperty;
 
@@ -41,7 +43,7 @@ public class AESCipherManager implements CipherManager {
   private final List<SecretKey> secretKeys;
 
   public AESCipherManager(Configuration config, List<byte []> keys) {
-    algorithm = config.getString(FrsProperty.STORE_CIPHER_ALGORITHM);
+    algorithm = config.getString(FrsProperty.STORE_ENCRYPTION_ALGORITHM);
     secretKeys = keys.stream()
       .map(key -> (SecretKey) new SecretKeySpec(key, "AES"))
       .collect(java.util.stream.Collectors.toList());
@@ -92,28 +94,43 @@ public class AESCipherManager implements CipherManager {
   }
 
   @Override
-  public ByteBuffer encrypt(ByteBuffer plainBuffer, ByteBuffer ivBuffer) {
+  public ByteBuffer[] encrypt(ByteBuffer[] input, ByteBuffer initializationVector) {
     SecretKey secretKey = secretKeys.get(0);
-    Cipher cipher = getCipher(secretKey, Cipher.ENCRYPT_MODE, ivBuffer);
-    int retries = 3;
-    int size = cipher.getOutputSize(plainBuffer.capacity());
-    while (retries > 0) {
-      try {
-        ByteBuffer cipherBuffer =
-          (plainBuffer.isDirect() ? ByteBuffer.allocateDirect(size) : ByteBuffer.allocate(size));
-        cipher.doFinal(plainBuffer, cipherBuffer);
-        cipherBuffer.flip();
-        return cipherBuffer;
-      } catch (IllegalBlockSizeException e) {
-        throw new IllegalArgumentException("invalid block size to cipher the data", e);
-      } catch (BadPaddingException e) {
-        throw new IllegalArgumentException("fail to cipher data as it is not padded properly", e);
-      } catch (ShortBufferException e) {
-        size = size + (size * 10 / 100);
-        --retries;
+    Cipher cipher = getCipher(secretKey, Cipher.ENCRYPT_MODE, initializationVector);
+
+    List<ByteBuffer> outputs = new ArrayList<>();
+
+    for (ByteBuffer inputBuffer : input) {
+      int size = cipher.getOutputSize(inputBuffer.remaining());
+      int retries = 3;
+      while (retries > 0) {
+        try {
+          ByteBuffer cipherBuffer = (inputBuffer.isDirect() ? ByteBuffer.allocateDirect(size) : ByteBuffer.allocate(size));
+          cipher.update(inputBuffer, cipherBuffer);
+          outputs.add((ByteBuffer) cipherBuffer.flip());
+          break;
+        } catch (ShortBufferException e) {
+          size = size + (size * 10 / 100);
+          --retries;
+        }
+      }
+      if (retries == 0) {
+        throw new IllegalArgumentException("fail to cipher data");
       }
     }
-    throw new IllegalArgumentException("fail to cipher data");
+
+    try {
+      byte[] tail = cipher.doFinal();
+      if (tail.length > 0) {
+        outputs.add(ByteBuffer.wrap(tail));
+      }
+
+      return outputs.toArray(new ByteBuffer[0]);
+    } catch (IllegalBlockSizeException e) {
+      throw new IllegalArgumentException("invalid block size to cipher the data", e);
+    } catch (BadPaddingException e) {
+      throw new IllegalArgumentException("fail to cipher data as it is not padded properly", e);
+    }
   }
 
   @Override

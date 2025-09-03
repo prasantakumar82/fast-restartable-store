@@ -88,7 +88,7 @@ public interface CipherManager {
    * @param ivBuffer The initialization vector to use for the encryption operation
    * @return A ByteBuffer containing the encrypted data
    */
-  ByteBuffer encrypt(ByteBuffer plainBuffer, ByteBuffer ivBuffer);
+  ByteBuffer[] encrypt(ByteBuffer[] plainBuffer, ByteBuffer ivBuffer);
 
   /**
    * Decrypts the content of a ByteBuffer using the provided initialization vector.

@@ -25,7 +25,7 @@ public enum FrsProperty {
   IO_COMMITLIST("io.commitList", Type.STRING, "ATOMIC"),
   IO_WAIT("io.wait", Type.INTEGER, 200),
   IO_DISABLE_SYNC("io.disableSync", Type.BOOLEAN, false),
-
+  
   IO_NIO_SEGMENT_SIZE("io.nio.segmentSize", Type.LONG, 512L * 1024 * 1024),
   IO_NIO_RECOVERY_MEMORY_SIZE("io.nio.recoveryMemorySize", Type.LONG, -1L),
   IO_NIO_POOL_MEMORY_SIZE("io.nio.memorySize", Type.LONG, 64L * 1024 * 1024),
@@ -35,11 +35,11 @@ public enum FrsProperty {
   IO_NIO_BUFFER_BUILDER("io.nio.bufferBuilder", Type.STRING, null),
   IO_NIO_ACCESS_METHOD("io.nio.accessMethod", Type.STRING, "STREAM"),
   IO_NIO_BUFFER_SOURCE("io.nio.bufferSource", Type.STRING, "HILO"),
-
+  
   RECOVERY_COMPRESSED_SKIP_SET("recovery.compressedSkipSet", Type.BOOLEAN, true),
   RECOVERY_REPLAY_PER_BATCH_SIZE("recovery.replayPerBatchSize", Type.INTEGER, 512),
   RECOVERY_REPLAY_TOTAL_BATCH_SIZE_MAX("recovery.replayTotalBatchSize", Type.INTEGER, 2048),
-
+  
   COMPACTOR_POLICY("compactor.policy", Type.STRING, "SizeBasedCompactionPolicy"),
   COMPACTOR_THROTTLE_AMOUNT("compactor.throttleAmount", Type.LONG,  1000L),
   COMPACTOR_RUN_INTERVAL("compactor.runInterval", Type.LONG, 300L),
@@ -57,9 +57,9 @@ public enum FrsProperty {
 
   FORCE_LOG_REGION_FORMAT("log.forceRegionFormat", Type.STRING, "FILE"),
 
-  STORE_CIPHER_LOG_RECORD("store.cipherLogRecord", Type.BOOLEAN, false),
-  STORE_CIPHER_KEY("store.cipherKey", Type.BYTEARRAY, null),
-  STORE_CIPHER_ALGORITHM("store.cipherAlgorithm", Type.STRING, "AES/CFB/PKCS5Padding");
+  STORE_ENCRYPTION("store.cipherLogRecord", Type.BOOLEAN, false),
+  STORE_ENCRYPTION_KEY("store.cipherKey", Type.BYTEARRAY, null),
+  STORE_ENCRYPTION_ALGORITHM("store.cipherAlgorithm", Type.STRING, "AES/CFB/PKCS5Padding");
 
   private static final String SYSTEM_PROPERTY_PREFIX = "com.tc.frs.";
 
