@@ -17,9 +17,19 @@ package com.terracottatech.frs;
 
 import com.terracottatech.frs.action.ActionCodec;
 import com.terracottatech.frs.action.ActionCodecImpl;
+import com.terracottatech.frs.action.ActionFactory;
 import com.terracottatech.frs.action.ActionManager;
 import com.terracottatech.frs.action.ActionManagerImpl;
+import com.terracottatech.frs.cipher.AESCipherManager;
+import com.terracottatech.frs.cipher.CipherCompactionActionFactory;
+import com.terracottatech.frs.cipher.CipherManager;
+import com.terracottatech.frs.cipher.CipherPutAction.CipherPutActionFactory;
+import com.terracottatech.frs.cipher.EncryptionActions;
+import com.terracottatech.frs.compaction.CompactionActionFactory;
 import com.terracottatech.frs.compaction.CompactionActions;
+import com.terracottatech.frs.compaction.Compactor;
+import com.terracottatech.frs.compaction.CompactorImpl;
+import com.terracottatech.frs.compaction.StandardCompactionActionFactory;
 import com.terracottatech.frs.config.Configuration;
 import com.terracottatech.frs.config.FrsProperty;
 import com.terracottatech.frs.flash.ReadManager;
@@ -42,6 +52,7 @@ import com.terracottatech.frs.transaction.TransactionManagerImpl;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.Properties;
 
 /**
@@ -52,46 +63,72 @@ public abstract class RestartStoreFactory {
   private RestartStoreFactory() {
   }
 
-  private static ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> createCodec(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager) {
-    ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec =
-            new ActionCodecImpl<ByteBuffer, ByteBuffer, ByteBuffer>(objectManager);
+  private static ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> createCodec(
+      ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager) {
+    ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec = new ActionCodecImpl<>(objectManager);
     MapActions.registerActions(0, codec);
     TransactionActions.registerActions(1, codec);
     CompactionActions.registerActions(2, codec);
     return codec;
   }
 
+  private static ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> registerCipherActions(
+      ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec,
+      ActionFactory<ByteBuffer, ByteBuffer, ByteBuffer> actionFactory) {
+    // This register CipherPutAction and CipherCompactionAction which
+    // enforces cipher mechanism.
+    EncryptionActions.registerActions(3, codec, actionFactory);
+    return codec;
+  }
+
   public static RestartStore<ByteBuffer, ByteBuffer, ByteBuffer> createStore(
-          ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
-          File dbHome, Properties properties) throws IOException, RestartStoreException {
+      ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+      File dbHome, Properties properties) throws IOException, RestartStoreException {
     Configuration configuration = Configuration.getConfiguration(dbHome, properties);
-    
+
     int memorySize = configuration.getLong(FrsProperty.IO_NIO_POOL_MEMORY_SIZE).intValue();
     BufferSource writingSource = null;
-    if ( configuration.getString(FrsProperty.IO_NIO_BUFFER_SOURCE).equals("HILO") ) {
+    if (configuration.getString(FrsProperty.IO_NIO_BUFFER_SOURCE).equals("HILO")) {
       writingSource = new MaskingBufferSource(new HiLoBufferSource(2048, 8 * 1024 * 1024, memorySize));
-    } else if ( configuration.getString(FrsProperty.IO_NIO_BUFFER_SOURCE).equals("SLAB") ) {
+    } else if (configuration.getString(FrsProperty.IO_NIO_BUFFER_SOURCE).equals("SLAB")) {
       writingSource = new MaskingBufferSource(new SLABBufferSource(8 * 1024 * 1024, memorySize));
     } else {
       long timeout = configuration.getLong(FrsProperty.IO_NIO_MEMORY_TIMEOUT);
       writingSource = new MaskingBufferSource(new SplittingBufferSource(64, memorySize, timeout));
     }
-    
-    IOManager ioManager = new NIOManager(configuration,writingSource);
-    ReadManager readManager = new ReadManagerImpl(ioManager, configuration.getString(FrsProperty.FORCE_LOG_REGION_FORMAT));
-    LogManager logManager = new StagingLogManager(ioManager,writingSource,configuration);
+
+    ActionCodec<ByteBuffer, ByteBuffer, ByteBuffer> codec = createCodec(objectManager);
+    IOManager ioManager = new NIOManager(configuration, writingSource);
+    ReadManager readManager = new ReadManagerImpl(ioManager,
+        configuration.getString(FrsProperty.FORCE_LOG_REGION_FORMAT));
+    LogManager logManager = new StagingLogManager(ioManager, writingSource, configuration);
     ActionManager actionManager = new ActionManagerImpl(logManager, objectManager,
-                                                        createCodec(objectManager),
-                                                        new MasterLogRecordFactory());
+        codec, new MasterLogRecordFactory());
     TransactionManager transactionManager = new TransactionManagerImpl(actionManager);
-    return new RestartStoreImpl(objectManager, transactionManager, logManager,
-                                actionManager, readManager, ioManager, configuration);
+
+    boolean cipherLog = configuration.getBoolean(FrsProperty.STORE_CIPHER_LOG_RECORD);
+    if (cipherLog) {
+      byte[] key = configuration.getByteArray(FrsProperty.STORE_CIPHER_KEY);
+      CipherManager cipherManager = new AESCipherManager(configuration, Collections.singletonList(key));
+      CipherPutActionFactory actionFactory = new CipherPutActionFactory(cipherManager);
+      CompactionActionFactory caFactory = new CipherCompactionActionFactory(cipherManager);
+      registerCipherActions(codec, actionFactory);
+      Compactor compactor = new CompactorImpl(objectManager, transactionManager, logManager,
+          ioManager, configuration, actionManager, caFactory);
+      return new RestartStoreImpl(objectManager, transactionManager, logManager,
+          actionManager, readManager, compactor, configuration, actionFactory);
+    } else {
+      CompactionActionFactory caFactory = new StandardCompactionActionFactory();
+      Compactor compactor = new CompactorImpl(objectManager, transactionManager, logManager,
+          ioManager, configuration, actionManager, caFactory);
+      return new RestartStoreImpl(objectManager, transactionManager, logManager,
+          actionManager, readManager, compactor, configuration, PutAction.FACTORY);
+    }
   }
 
   public static RestartStore<ByteBuffer, ByteBuffer, ByteBuffer> createStore(
-          ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, File dbHome,
-          long fileSize) throws
-          IOException, RestartStoreException {
+      ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, File dbHome,
+      long fileSize) throws IOException, RestartStoreException {
     Properties properties = new Properties();
     properties.setProperty("io.nio.segmentSize", Long.toString(fileSize));
     return createStore(objectManager, dbHome, properties);
