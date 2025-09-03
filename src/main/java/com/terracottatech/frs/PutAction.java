@@ -21,9 +21,9 @@ import com.terracottatech.frs.action.ActionFactory;
 import com.terracottatech.frs.compaction.Compactor;
 import com.terracottatech.frs.object.ObjectManager;
 import com.terracottatech.frs.util.ByteBufferUtils;
+
 import java.io.Closeable;
 import java.io.IOException;
-
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.Set;
@@ -32,54 +32,67 @@ import java.util.Set;
  * @author tim
  */
 public class PutAction implements GettableAction {
-  /* PutAction.getPayload
-  4 bytes - PutAction.idByteCount
-  4 bytes - PutAction.keyByteCount
-  4 bytes - PutAction.valueByteCount
-  8 bytes - PutAction.invalidatedLsn
-  */
+  /*
+   * PutAction.getPayload
+   * 4 bytes - PutAction.idByteCount
+   * 4 bytes - PutAction.keyByteCount
+   * 4 bytes - PutAction.valueByteCount
+   * 8 bytes - PutAction.invalidatedLsn
+   */
   public static final long PUT_ACTION_OVERHEAD = 20L;
 
-  public static final ActionFactory<ByteBuffer, ByteBuffer, ByteBuffer> FACTORY =
-          new ActionFactory<ByteBuffer, ByteBuffer, ByteBuffer>() {
-            @Override
-            public Action create(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
-                                 ActionCodec codec, ByteBuffer[] buffers) {
-              int idLength = ByteBufferUtils.getInt(buffers);
-              int keyLength = ByteBufferUtils.getInt(buffers);
-              int valueLength = ByteBufferUtils.getInt(buffers);
-              long invalidatedLsn = ByteBufferUtils.getLong(buffers);
-              ByteBuffer id = ByteBufferUtils.getBytes(idLength, buffers);
-              ByteBuffer key = ByteBufferUtils.getBytes(keyLength, buffers);
-              ByteBuffer value = ByteBufferUtils.getBytes(valueLength, buffers);
-              return new PutAction(objectManager, null, id, key, value, invalidatedLsn);
-            }
-          };
+  public static final PutActionFactory FACTORY = new PutActionFactory();
 
-  private static final int HEADER_SIZE =
-          ByteBufferUtils.INT_SIZE * 3 + ByteBufferUtils.LONG_SIZE;
+  public static class PutActionFactory implements GettableActionFactory,
+      ActionFactory<ByteBuffer, ByteBuffer, ByteBuffer> {
+    public PutActionFactory() {
+    }
 
-  private final ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager;
-  private final ByteBuffer                                        id;
-  private final ByteBuffer                                        key;
-  private final ByteBuffer                                        value;
-  private final Compactor                                         compactor;
+    @SuppressWarnings("rawtypes")
+    @Override
+    public Action create(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+        ActionCodec codec, ByteBuffer[] buffers) {
+      int idLength = ByteBufferUtils.getInt(buffers);
+      int keyLength = ByteBufferUtils.getInt(buffers);
+      int valueLength = ByteBufferUtils.getInt(buffers);
+      long invalidatedLsn = ByteBufferUtils.getLong(buffers);
+      ByteBuffer id = ByteBufferUtils.getBytes(idLength, buffers);
+      ByteBuffer key = ByteBufferUtils.getBytes(keyLength, buffers);
+      ByteBuffer value = ByteBufferUtils.getBytes(valueLength, buffers);
+      return new PutAction(objectManager, null, id, key, value, invalidatedLsn);
+    }
 
-  private long                                                    markedLsn;
-  private long                                                    invalidatedLsn;
-  private Closeable                                              disposable;
-
-  PutAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, Compactor compactor, ByteBuffer id,
-            ByteBuffer key, ByteBuffer value, boolean recovery) {
-    this(objectManager, compactor, id, key, value, objectManager.getLsn(id, key));
-    if (invalidatedLsn == -1L && recovery) {
-      throw new IllegalStateException(
-              "Put over an unrecovered key is unsupported during recovery.");
+    @Override
+    public GettableAction create(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager,
+        Compactor compactor, ByteBuffer id, ByteBuffer key, ByteBuffer value, boolean isRecovering) {
+      PutAction putAction = new PutAction(objectManager, compactor, id, key, value, isRecovering);
+      return putAction;
     }
   }
 
-  protected PutAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, Compactor compactor, ByteBuffer id,
-                    ByteBuffer key, ByteBuffer value, long invalidatedLsn) {
+  private static final int HEADER_SIZE = ByteBufferUtils.INT_SIZE * 3 + ByteBufferUtils.LONG_SIZE;
+
+  private final ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager;
+  private final ByteBuffer id;
+  private final ByteBuffer key;
+  private final ByteBuffer value;
+  private final Compactor compactor;
+
+  private long markedLsn;
+  private long invalidatedLsn;
+  private Closeable disposable;
+
+  public PutAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, Compactor compactor, ByteBuffer id,
+      ByteBuffer key, ByteBuffer value, boolean recovery) {
+    this(objectManager, compactor, id, key, value, objectManager.getLsn(id, key));
+    if (invalidatedLsn == -1L && recovery) {
+      throw new IllegalStateException(
+          "Put over an unrecovered key is unsupported during recovery.");
+    }
+  }
+
+  public PutAction(ObjectManager<ByteBuffer, ByteBuffer, ByteBuffer> objectManager, Compactor compactor, ByteBuffer id,
+      ByteBuffer key, ByteBuffer value, long invalidatedLsn) {
     this.objectManager = objectManager;
     this.compactor = compactor;
     this.id = id;
@@ -103,10 +116,10 @@ public class PutAction implements GettableAction {
     return value;
   }
 
-    @Override
-    public long getLsn() {
-        return markedLsn;
-    }
+  @Override
+  public long getLsn() {
+    return markedLsn;
+  }
 
   @Override
   public Set<Long> getInvalidatedLsns() {
@@ -122,14 +135,14 @@ public class PutAction implements GettableAction {
   public void dispose() {
     try {
       this.close();
-    } catch ( IOException ioe ) {
+    } catch (IOException ioe) {
       throw new RuntimeException(ioe);
     }
   }
 
   @Override
   public void close() throws IOException {
-    if ( disposable != null ) {
+    if (disposable != null) {
       disposable.close();
       disposable = null;
     }
@@ -143,7 +156,7 @@ public class PutAction implements GettableAction {
       compactor.generatedGarbage(invalidatedLsn);
     }
   }
-  
+
   @Override
   public void replay(long lsn) {
     objectManager.replayPut(getIdentifier(), getKey(), getValue(), lsn);
@@ -161,18 +174,20 @@ public class PutAction implements GettableAction {
     header.putInt(key.remaining());
     header.putInt(value.remaining());
     header.putLong(invalidatedLsn).flip();
-    return new ByteBuffer[]{header, id.slice(), key.slice(), value.slice()};
+    return new ByteBuffer[] { header, id.slice(), key.slice(), value.slice() };
   }
 
   @Override
   public boolean equals(Object o) {
-    if (this == o) return true;
-    if (o == null || getClass() != o.getClass()) return false;
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
 
     PutAction putAction = (PutAction) o;
 
     return id.equals(putAction.id) && key.equals(putAction.key) && value.equals(
-            putAction.value) && invalidatedLsn == putAction.invalidatedLsn;
+        putAction.value) && invalidatedLsn == putAction.invalidatedLsn;
   }
 
   @Override
