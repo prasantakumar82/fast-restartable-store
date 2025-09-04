@@ -57,8 +57,8 @@ public enum FrsProperty {
 
   FORCE_LOG_REGION_FORMAT("log.forceRegionFormat", Type.STRING, "FILE"),
 
-  STORE_ENCRYPTION("store.cipherLogRecord", Type.BOOLEAN, false),
-  STORE_ENCRYPTION_KEY("store.cipherKey", Type.BYTEARRAY, null),
+  STORE_ENCRYPTION("store.cipherLogRecord", Type.BOOLEAN, true),
+  STORE_ENCRYPTION_KEY("store.cipherKey", Type.BYTEARRAY, new byte[16]),
   STORE_ENCRYPTION_ALGORITHM("store.cipherAlgorithm", Type.STRING, "AES/CFB/PKCS5Padding");
 
   private static final String SYSTEM_PROPERTY_PREFIX = "com.tc.frs.";
